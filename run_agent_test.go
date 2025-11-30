@@ -25,6 +25,8 @@ type MockGenerator struct {
 	capturedCalls  []MockGenerateCall
 	tools          map[string]ai.Tool
 	messageHistory []*ai.Message
+	boolResponses  []bool
+	boolCallIndex  int
 }
 
 func (m *MockGenerator) Generate(ctx context.Context, opts ...ai.GenerateOption) (*ai.ModelResponse, error) {
@@ -60,7 +62,13 @@ func (m *MockGenerator) Generate(ctx context.Context, opts ...ai.GenerateOption)
 }
 
 func (m *MockGenerator) GenerateBool(ctx context.Context, prompt string, history []*ai.Message) (bool, error) {
-	return true, nil
+	if m.boolCallIndex >= len(m.boolResponses) {
+		// Default to true if no more responses are defined, to avoid infinite loops in tests
+		return true, nil
+	}
+	response := m.boolResponses[m.boolCallIndex]
+	m.boolCallIndex++
+	return response, nil
 }
 
 func (m *MockGenerator) LookupTool(name string) ai.Tool {
@@ -74,6 +82,8 @@ func NewMockGenerator(responses []*ai.ModelResponse, tools map[string]ai.Tool) *
 		tools:          tools,
 		capturedCalls:  make([]MockGenerateCall, 0),
 		messageHistory: make([]*ai.Message, 0),
+		boolResponses:  []bool{},
+		boolCallIndex:  0,
 	}
 }
 
@@ -496,4 +506,55 @@ func TestInterruption_Scenarios(t *testing.T) {
 			assert.Equal(t, scenario.expectedCalls, mockGen.callIndex)
 		})
 	}
+}
+
+func TestRunAgent_WithConversationLoop(t *testing.T) {
+	mockUserInteraction := func(ctx context.Context, input QuestionInput) (string, error) {
+		return "User Answer", nil
+	}
+
+	mockTool := createMockTool("askQuestion")
+	tools := map[string]ai.Tool{
+		"askQuestion": mockTool,
+	}
+
+	mockGen := NewMockGenerator(
+		[]*ai.ModelResponse{
+			// 1. Initial response from RunAgent
+			createTextResponse("Initial Question", "stop"),
+			// 2. Response from the loop
+			createTextResponse("Final Answer", "stop"),
+		},
+		tools,
+	)
+	// 1. First check: false (not finished)
+	// 2. Second check: true (finished)
+	mockGen.boolResponses = []bool{false, true}
+
+	ctx := context.Background()
+
+	interruptionHandler := InterruptionHandler{
+		generator:       mockGen,
+		UserInteraction: mockUserInteraction,
+	}
+
+	conversationLoopHandler := &ConversationLoopHandler{
+		generator:           mockGen,
+		validationPrompt:    "Is finished?",
+		interruptionHandler: interruptionHandler,
+	}
+
+	result, err := RunAgent(
+		ctx,
+		&Options{
+			generator:       mockGen,
+			responseHandler: conversationLoopHandler,
+			toolNames:       []string{"askQuestion"},
+		},
+	)
+
+	require.NoError(t, err)
+	assert.Equal(t, "Final Answer", result)
+	assert.Equal(t, 2, mockGen.callIndex)
+	assert.Equal(t, 2, mockGen.boolCallIndex)
 }

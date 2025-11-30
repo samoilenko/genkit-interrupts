@@ -59,12 +59,18 @@ func main() {
 		UserInteraction: terminalReader.Interactor,
 	}
 
+	conversationLoopHandler := &ConversationLoopHandler{
+		generator:           &generator,
+		validationPrompt:    "Analyze if a conversation can be assumed as finished. If the model is asking a question or requesting more information, the conversation is NOT finished. Only return true if the model has provided a final answer or solution.",
+		interruptionHandler: interruptionHandler,
+	}
+
 	finalResponse, err := RunAgent(ctx, &Options{
 		generator:       &generator,
 		systemPrompt:    systemPrompt,
 		userPrompt:      userPrompt,
 		toolNames:       toolNames,
-		responseHandler: &interruptionHandler,
+		responseHandler: conversationLoopHandler,
 	})
 	if err != nil {
 		log.Fatal(err.Error())
